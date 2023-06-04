@@ -1,6 +1,7 @@
 import sys
 import os
 import datetime
+import dateutil.parser
 import xlsxwriter
 import re
 import csv
@@ -9,6 +10,8 @@ EVIDENCES = None
 MEMORY = None
 REPORTS = None
 SHADOWCOPIES = None
+
+HOSTNAME = None
 
 def read_file(file) -> list:
     if not file:
@@ -41,6 +44,7 @@ def value_from_tag_options(lines, options):
         options = [options]
     for opt in options:
         for line in lines:
+            line = "\n" + line # so that we can have an option that sets the start-of-line: "\nVersion="
             try:
                 return line[line.index(opt)+len(opt):].strip()
             except ValueError:
@@ -91,29 +95,43 @@ def reports(workbook):
     ws_general.set_column(0, 0, 20)
     ws_general.set_column(1, 1, 70)
 
-    print ("[+] Analyze Reports...")
-
     # system_date_time.txt
+    print ("[+] REPORTS: System Date Time...")
     system_date_time = read_file(path_options(REPORTS, ["system_date_time.txt"]))
     date = executed_command_output(system_date_time, "date /T")
     time = executed_command_output(system_date_time, "time /T")
     timezone = value_from_tag_options(system_date_time, ["Caption="])
-    WINTRIAGE_DATETIME = datetime_object = datetime.datetime.strptime(date + " " + time, '%d/%m/%Y %H:%M')
-    print("[i] WinTriage Executed at:", WINTRIAGE_DATETIME, timezone)
+    WINTRIAGE_DATETIME = dateutil.parser.parse(date + " " + time, dayfirst=True, yearfirst=False)
+    print("    * WinTriage Executed at:", WINTRIAGE_DATETIME, timezone)
     ws_general.write(ws_general_i, 0, "WinTriage Execution"); ws_general.write(ws_general_i, 1, str(WINTRIAGE_DATETIME)); ws_general_i += 1
     ws_general.write(ws_general_i, 0, "WinTriage Timezone"); ws_general.write(ws_general_i, 1, timezone); ws_general_i += 1
 
     # system_info.txt
+    print ("[+] REPORTS: System Info...")
     system_info = read_file(path_options(REPORTS, ["system_info.txt"]))
+
     systeminfo = executed_command_output(system_info, "systeminfo")
     hostname = value_from_tag_options(systeminfo, ["Host Name:", "Nombre de host:"])
     winos = value_from_tag_options(systeminfo, ["OS Name:", "Nombre del sistema operativo:"])
+    winver = value_from_tag_options(systeminfo, ["OS Version:", "n del sistema operativo:"])
     domain = value_from_tag_options(systeminfo, ["Domain:", "Dominio:"])
     manufacturer = value_from_tag_options(systeminfo, ["System Manufacturer:", "Fabricante del sistema:"])
-    
+
+    wmic_os = executed_command_output(system_info, "wmic os get Version, Caption, CountryCode, CSName, Description, InstallDate, SerialNumber, ServicePackMajorVersion, WindowsDirectory /format:list")
+    if not hostname: hostname = value_from_tag_options(wmic_os, ["CSName="])
+    if not winos: winos = value_from_tag_options(wmic_os, ["Caption="])
+    if not winver: winver = value_from_tag_options(wmic_os, ["\nVersion="]) + " Service Pack " + value_from_tag_options(wmic_os, ["ServicePackMajorVersion="])
+
+    if hostname: print("    * Hostname:", hostname)
+    if domain: print("    * Domain:", domain)
+    if winos: print("    * OS:", winos, winver)
+
+    global HOSTNAME
+    if hostname: HOSTNAME = hostname
+
     ws_general.write(ws_general_i, 0, "Hostname"); ws_general.write(ws_general_i, 1, hostname); ws_general_i += 1
     ws_general.write(ws_general_i, 0, "Domain"); ws_general.write(ws_general_i, 1, domain); ws_general_i += 1
-    ws_general.write(ws_general_i, 0, "OS"); ws_general.write(ws_general_i, 1, winos); ws_general_i += 1
+    ws_general.write(ws_general_i, 0, "OS"); ws_general.write(ws_general_i, 1, winos + " " + winver); ws_general_i += 1
     ws_general.write(ws_general_i, 0, "Manufacturer"); ws_general.write(ws_general_i, 1, manufacturer); ws_general_i += 1
     
     ws_systeminfo = workbook.add_worksheet("System Info")
@@ -131,7 +149,7 @@ def reports(workbook):
         ws_systeminfo_i += 1
 
     # Usuarios.txt Users.txt
-
+    print ("[+] REPORTS: Users and Groups...")
     users = read_file(path_options(REPORTS, ["Usuarios.txt", "Users.txt"]))
 
     ws_users = workbook.add_worksheet("Users & Groups")
@@ -160,7 +178,7 @@ def reports(workbook):
         line = line.strip()
         if line:
             if i == 0: continue # ignore headers
-            res = re.split("\s+", line)
+            res = re.split("\s\s+", line)
             if len(res) != 2:
                 continue
             ws_users.write(ws_users_i, 1, res[0].split("\\")[0])
@@ -189,10 +207,13 @@ def reports(workbook):
             ws_users_i += 1
 
     # network.txt
+    print ("[+] REPORTS: Network...")
     network = read_file(path_options(REPORTS, ["network.txt"]))
     ipconfig = executed_command_output(network, "ipconfig /all")
     ip = value_from_tag_options(ipconfig, ["Dirección IP", "Dirección IPv4", "Direcci¢n IPv4", "Direcci¢n IPv4", "IP Address", "IPv4 Address"])
     ip = ip.replace(". ", "").replace(":", "").strip()
+
+    if ip: print("    * IP:", ip)
     ws_general.write(ws_general_i, 0, "IP"); ws_general.write(ws_general_i, 1, ip); ws_general_i += 1
 
     netstat = executed_command_output(network, "netstat -noab")
@@ -218,12 +239,22 @@ def reports(workbook):
     ws_network.autofilter(0, 0, 0, 5)
 
     for block in netstat.strip().split("\n\n"):
-        if ws_network_i == 0: # ignore header
-            pass
-        # print (block)
+
         for line in block.split("\n"):
-            res = re.split("\s+", line)
-            if len(res) == 6:
+
+            res = re.split("\s\s+", line)
+            res_proc = re.findall("\[.+\]", line)
+
+            if res and len(res)>1 and res[1] == "Proto": # Ignore header
+                continue
+
+            if not res_proc and len(res) < 4 : # Title OR Can not obtain ownership information
+                continue
+
+            elif res_proc: # Process line
+                ws_network.write(ws_network_i - 1, 5, ", ".join(res_proc).replace("[", "").replace("]", ""))
+
+            elif len(res) == 6: # Line with Status
                 ws_network.write(ws_network_i, 0, res[1])
                 ws_network.write(ws_network_i, 1, res[2])
                 ws_network.write(ws_network_i, 2, res[3])
@@ -233,7 +264,8 @@ def reports(workbook):
                 except:
                     ws_network.write(ws_network_i, 4, res[5])
                 ws_network_i += 1
-            elif len(res) == 5:
+
+            elif len(res) == 5: # Line without Status
                 ws_network.write(ws_network_i, 0, res[1])
                 ws_network.write(ws_network_i, 1, res[2])
                 ws_network.write(ws_network_i, 2, res[3])
@@ -242,9 +274,7 @@ def reports(workbook):
                 except:
                     ws_network.write(ws_network_i, 4, res[4])
                 ws_network_i += 1
-            else:
-                res = re.findall("\[.+\]", line)
-                ws_network.write(ws_network_i - 1, 5, ", ".join(res).replace("[", "").replace("]", ""))
+            
     
     # etc hosts
 
@@ -268,7 +298,7 @@ def reports(workbook):
             ws_hosts_i += 1
 
     # processes.csv
-
+    print ("[+] REPORTS: Processes...")
     ws_processes = workbook.add_worksheet("Processes")
     ws_processes_i = 0
 
@@ -297,9 +327,13 @@ def reports(workbook):
     with open(path_options(REPORTS, ["processes.csv"]), newline='') as csvfile:
         spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
         for row in spamreader:
-            if ws_processes_i == 0: ws_processes_i += 1; continue # avoid header
+            if not row: # empty rows
+                continue
+            if ws_processes_i == 0: # avoid header
+                ws_processes_i += 1
+                continue
             for i, rv in enumerate(row):
-                if i == 1:
+                if i == 1 or i == 3:
                     try:
                         ws_processes.write_number(ws_processes_i, i, int(rv))
                         continue
@@ -309,7 +343,7 @@ def reports(workbook):
             ws_processes_i += 1
 
     # scheduled tasks
-
+    print ("[+] REPORTS: Scheduled Tasks...")
     ws_scheduled = workbook.add_worksheet("Scheduled Tasks")
     ws_scheduled_i = 0
 
@@ -327,12 +361,23 @@ def reports(workbook):
     with open(path_options(REPORTS, ["programmed_tasks.csv"]), newline='') as csvfile:
         spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
         for row in spamreader:
-            if ws_scheduled_i == 0: ws_scheduled_i += 1; continue # avoid header
+            if not row: # empty rows
+                continue
+            if ws_scheduled_i == 0: # avoid header
+                ws_scheduled_i += 1
+                continue
             for i, rv in enumerate(row):
                 if i == 2 or i == 5: # dates
                     try:
-                        date_time = datetime.datetime.strptime(rv, '%d/%m/%Y %H:%M:%S')
+                        # date_time = datetime.datetime.strptime(rv, '%d/%m/%Y %H:%M:%S')
+                        date_time = dateutil.parser.parse(rv, dayfirst=True, yearfirst=False)
                         ws_scheduled.write_datetime(ws_scheduled_i, i, date_time, date_format)
+                        continue
+                    except:
+                        pass
+                if i == 6:
+                    try:
+                        ws_scheduled.write_number(ws_scheduled_i, i, int(rv))
                         continue
                     except:
                         pass
@@ -340,7 +385,7 @@ def reports(workbook):
             ws_scheduled_i += 1
 
     # loaded_dlls
-
+    print ("[+] REPORTS: Loaded DLLs...")
     ws_loaded_dlls = workbook.add_worksheet("Loaded DLLs")
     ws_loaded_dlls_i = 0
 
@@ -357,7 +402,11 @@ def reports(workbook):
     with open(path_options(REPORTS, ["loaded_dlls.csv"]), newline='') as csvfile:
         spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
         for row in spamreader:
-            if ws_loaded_dlls_i == 0: ws_loaded_dlls_i += 1; continue # avoid header
+            if not row: # empty rows
+                continue
+            if ws_loaded_dlls_i == 0: # avoid header
+                ws_loaded_dlls_i += 1
+                continue
             for i, rv in enumerate(row):
                 if i == 1:
                     try:
@@ -369,7 +418,7 @@ def reports(workbook):
             ws_loaded_dlls_i += 1
 
     # complete_file_listing_x
-
+    print ("[+] REPORTS: Drives Files...")
     for file in os.listdir(REPORTS):
 
         if file.startswith("complete_file_listing_"):
@@ -400,26 +449,37 @@ def reports(workbook):
                     head = d_o
                     break
             # get directory blocks
-            for dir_block in data.split(head):
+            dir_blocks = data.split(head)
+            for i, dir_block in enumerate(dir_blocks):
+                if i == len(dir_blocks)-1: # If last block, remove the "Total Files Listed:" section
+                    dir_block = "\n\n".join(dir_block.strip().split("\n\n")[0:-1]) # remove last section
+                    # print("LAST BLOCK:", i, "--->\n", dir_block)
                 dir_block = dir_block.strip().split("\n")
                 dir_root = dir_block[0].strip()
                 rows = dir_block[2:-1]
                 for row in rows:
                     res = re.split("\s+", row)
-                    if len(res) < 3:
+                    if len(res) < 4:
                         continue
-                    if res[3] in [".", ".."]:
+                    # Check AM/PM date format
+                    date_offset = 0
+                    if res[2].strip().upper() in ["AM", "PM"]:
+                        date_offset = 1
+                        res[1] += " " + res[2]
+                    if res[3+date_offset] in [".", ".."]:
                         continue
                     try:
-                        date_time = datetime.datetime.strptime(res[0] + " " + res[1], '%d/%m/%Y %H:%M')
+                        # date_time = datetime.datetime.strptime(res[0] + " " + res[1], '%d/%m/%Y %H:%M')
+                        date_time = dateutil.parser.parse(res[0] + " " + res[1], dayfirst=True, yearfirst=False)
                         ws_drive.write_datetime(ws_drive_i, 0, date_time, date_format)
                     except:
                         ws_drive.write(ws_drive_i, 0, res[0] + " " + res[1])
-                    ws_drive.write(ws_drive_i, 1, "DIR" if res[2] == "<DIR>" else "FILE")
-                    ws_drive.write(ws_drive_i, 2, "" if res[2] == "<DIR>" else res[2])
-                    ws_drive.write(ws_drive_i, 3, dir_root + "\\" + res[3])
+                    ws_drive.write(ws_drive_i, 1, "DIR" if res[2+date_offset] == "<DIR>" else "FILE")
+                    ws_drive.write(ws_drive_i, 2, "" if res[2+date_offset] == "<DIR>" else res[2+date_offset])
+                    ws_drive.write(ws_drive_i, 3, dir_root + "\\" + res[3+date_offset])
                     ws_drive_i += 1
-
+    
+    print ("[+] REPORTS: Done!")
     return
 
 if __name__ == "__main__":
@@ -468,7 +528,14 @@ if __name__ == "__main__":
     
     if SHADOWCOPIES:
         pass
-
-    workbook.close()
-
+    
+    print ("[+] Saving Extract...")
+    try:
+        if HOSTNAME:
+            workbook.filename = ROOT + '\\Extract_' + HOSTNAME + '.xlsx'
+        workbook.close()
+    except xlsxwriter.workbook.FileCreateError:
+        print ("[!] Could not create Extract file... It is likely being used.")
+    except Exception as e:
+        print ("[!] Could not save Extract. Error: ", str(e))
     print("[+] Done!")
