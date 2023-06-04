@@ -79,7 +79,11 @@ def executed_command_output(data, command):
 
 def reports(workbook):
 
+    # formats
     bold = workbook.add_format({'bold': True})
+    date_format = workbook.add_format({'num_format': "dd/mm/yy hh:mm:ss", 'align': 'left'})
+    unusual = workbook.add_format({'bold': True})
+    suspicious = workbook.add_format({'bold': True})
     
     ws_general = workbook.add_worksheet("General")
     ws_general_i = 0
@@ -148,6 +152,8 @@ def reports(workbook):
     ws_users.write(ws_users_i, 5, "Status", bold)
     ws_users_i += 1
 
+    ws_users.autofilter(0, 0, 0, 5) 
+
     useraccount = executed_command_output(users, "wmic useraccount get caption, sid")
 
     for i, line in enumerate(useraccount.split("\n")):
@@ -185,7 +191,8 @@ def reports(workbook):
     # network.txt
     network = read_file(path_options(REPORTS, ["network.txt"]))
     ipconfig = executed_command_output(network, "ipconfig /all")
-    ip = value_from_tag_options(ipconfig, ["Dirección IP. . . . . . . . . :", "IP Address"])
+    ip = value_from_tag_options(ipconfig, ["Dirección IP", "Dirección IPv4", "Direcci¢n IPv4", "Direcci¢n IPv4", "IP Address", "IPv4 Address"])
+    ip = ip.replace(". ", "").replace(":", "").strip()
     ws_general.write(ws_general_i, 0, "IP"); ws_general.write(ws_general_i, 1, ip); ws_general_i += 1
 
     netstat = executed_command_output(network, "netstat -noab")
@@ -208,6 +215,8 @@ def reports(workbook):
     ws_network.write(ws_network_i, 5, "Process", bold)
     ws_network_i += 1
 
+    ws_network.autofilter(0, 0, 0, 5)
+
     for block in netstat.strip().split("\n\n"):
         if ws_network_i == 0: # ignore header
             pass
@@ -219,13 +228,19 @@ def reports(workbook):
                 ws_network.write(ws_network_i, 1, res[2])
                 ws_network.write(ws_network_i, 2, res[3])
                 ws_network.write(ws_network_i, 3, res[4])
-                ws_network.write(ws_network_i, 4, res[5])
+                try:
+                    ws_network.write_number(ws_network_i, 4, int(res[5]))
+                except:
+                    ws_network.write(ws_network_i, 4, res[5])
                 ws_network_i += 1
             elif len(res) == 5:
                 ws_network.write(ws_network_i, 0, res[1])
                 ws_network.write(ws_network_i, 1, res[2])
                 ws_network.write(ws_network_i, 2, res[3])
-                ws_network.write(ws_network_i, 4, res[4])
+                try:
+                    ws_network.write_number(ws_network_i, 4, int(res[4]))
+                except:
+                    ws_network.write(ws_network_i, 4, res[4])
                 ws_network_i += 1
             else:
                 res = re.findall("\[.+\]", line)
@@ -277,11 +292,19 @@ def reports(workbook):
     ws_processes.write(ws_processes_i, 7, "CPU Time", bold)
     ws_processes.write(ws_processes_i, 8, "Window Title", bold)
 
+    ws_processes.autofilter(0, 0, 0, 8)
+
     with open(path_options(REPORTS, ["processes.csv"]), newline='') as csvfile:
         spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
         for row in spamreader:
             if ws_processes_i == 0: ws_processes_i += 1; continue # avoid header
             for i, rv in enumerate(row):
+                if i == 1:
+                    try:
+                        ws_processes.write_number(ws_processes_i, i, int(rv))
+                        continue
+                    except:
+                        pass
                 ws_processes.write(ws_processes_i, i, rv)
             ws_processes_i += 1
 
@@ -290,19 +313,29 @@ def reports(workbook):
     ws_scheduled = workbook.add_worksheet("Scheduled Tasks")
     ws_scheduled_i = 0
 
-    ws_scheduled.set_column(2, 2, 18)
-    ws_scheduled.set_column(7, 7, 15)
-    ws_scheduled.set_column(9, 9, 40)
+    ws_scheduled.set_column(1, 1, 25)
+    ws_scheduled.set_column(2, 2, 16)
+    ws_scheduled.set_column(5, 5, 16)
+    ws_scheduled.set_column(8, 8, 40)
 
     headers = ["HostName","TaskName","Next Run Time","Status","Logon Mode","Last Run Time","Last Result","Creator","Schedule","Task To Run","Start In","Comment","Scheduled Task State","Scheduled Type","Start Time","Start Date","End Date","Days","Months","Run As User","Delete Task If Not Rescheduled","Stop Task If Runs X Hours and X Mins","Repeat: Every","Repeat: Until: Time","Repeat: Until: Duration","Repeat: Stop If Still Running","Idle Time","Power Management"]
     for i, h in enumerate(headers):
         ws_scheduled.write(ws_scheduled_i, i, h, bold)
+
+    ws_scheduled.autofilter(0, 0, 0, len(headers)-1)
 
     with open(path_options(REPORTS, ["programmed_tasks.csv"]), newline='') as csvfile:
         spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
         for row in spamreader:
             if ws_scheduled_i == 0: ws_scheduled_i += 1; continue # avoid header
             for i, rv in enumerate(row):
+                if i == 2 or i == 5: # dates
+                    try:
+                        date_time = datetime.datetime.strptime(rv, '%d/%m/%Y %H:%M:%S')
+                        ws_scheduled.write_datetime(ws_scheduled_i, i, date_time, date_format)
+                        continue
+                    except:
+                        pass
                 ws_scheduled.write(ws_scheduled_i, i, rv)
             ws_scheduled_i += 1
 
@@ -319,11 +352,19 @@ def reports(workbook):
     ws_loaded_dlls.write(ws_loaded_dlls_i, 1, "PID", bold)
     ws_loaded_dlls.write(ws_loaded_dlls_i, 2, "Loaded DLLs", bold)
 
+    ws_loaded_dlls.autofilter(0, 0, 0, 2)
+
     with open(path_options(REPORTS, ["loaded_dlls.csv"]), newline='') as csvfile:
         spamreader = csv.reader(csvfile, delimiter=',', quotechar='"')
         for row in spamreader:
             if ws_loaded_dlls_i == 0: ws_loaded_dlls_i += 1; continue # avoid header
             for i, rv in enumerate(row):
+                if i == 1:
+                    try:
+                        ws_loaded_dlls.write_number(ws_loaded_dlls_i, i, int(rv))
+                        continue
+                    except:
+                        pass
                 ws_loaded_dlls.write(ws_loaded_dlls_i, i, rv)
             ws_loaded_dlls_i += 1
 
@@ -342,7 +383,9 @@ def reports(workbook):
                 ws_drive.write(ws_drive_i, i, h, bold)
             ws_drive_i += 1
 
-            ws_drive.set_column(0, 0, 15)
+            ws_drive.autofilter(0, 0, 0, len(headers)-1)
+
+            ws_drive.set_column(0, 0, 16)
             ws_drive.set_column(1, 1, 5)
             ws_drive.set_column(2, 2, 13)
             ws_drive.set_column(3, 3, 90)
@@ -367,12 +410,15 @@ def reports(workbook):
                         continue
                     if res[3] in [".", ".."]:
                         continue
-                    ws_drive.write(ws_drive_i, 0, res[0] + " " + res[1])
+                    try:
+                        date_time = datetime.datetime.strptime(res[0] + " " + res[1], '%d/%m/%Y %H:%M')
+                        ws_drive.write_datetime(ws_drive_i, 0, date_time, date_format)
+                    except:
+                        ws_drive.write(ws_drive_i, 0, res[0] + " " + res[1])
                     ws_drive.write(ws_drive_i, 1, "DIR" if res[2] == "<DIR>" else "FILE")
                     ws_drive.write(ws_drive_i, 2, "" if res[2] == "<DIR>" else res[2])
                     ws_drive.write(ws_drive_i, 3, dir_root + "\\" + res[3])
                     ws_drive_i += 1
-
 
     return
 
